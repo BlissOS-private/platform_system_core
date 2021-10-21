@@ -48,7 +48,7 @@ FirstStageMountAndroid::FirstStageMountAndroid(Fstab fstab, bool data_on_userdat
 Result<std::unique_ptr<FirstStageMount>> FirstStageMount::Create(const std::string& cmdline) {
     Fstab fstab;
     if (!ReadDefaultFstab(&fstab)) {
-        return Error() << "failed to read default fstab for first stage mount";
+        LOG(INFO) << "failed to read default fstab for first stage mount";
     }
 
     bool data_on_userdata = false;
