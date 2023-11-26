@@ -1356,6 +1356,9 @@ on property:ro.debuggable=1
 on init && property:ro.debuggable=1 && property:ro.console.enable=1
     start console
 
+on init && property:ro.boot.enable_console=1
+    start console
+
 # Allow other processes to run `snapshotctl` through `init`. This requires
 # `set_prop` permission on `snapshotctl_prop`.
 on property:sys.snapshotctl.map=requested
