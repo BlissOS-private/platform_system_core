@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <optional>
 
@@ -145,6 +146,9 @@ BatteryMonitor::BatteryMonitor()
       mBatteryDevicePresent(false),
       mBatteryFixedCapacity(0),
       mBatteryFixedTemperature(0),
+      mBatteryFullEnergy(0),
+      mBatteryEnergyCounter(0),
+      mBatteryFullEnergyDesignCapacity(0),
       mBatteryHealthStatus(BatteryMonitor::BH_UNKNOWN),
       mHealthInfo(std::make_unique<HealthInfo>()),
       mLastGoodBatteryLevel(std::nullopt) {
@@ -482,7 +486,9 @@ void BatteryMonitor::updateValues(void) {
             tryGetIntField(mHealthdConfig->batteryCycleCountPath).value_or(0);
 
     mHealthInfo->batteryChargeCounterUah =
-            tryGetIntField(mHealthdConfig->batteryChargeCounterPath).value_or(0);
+            mBatteryEnergyCounter
+                    ? mBatteryEnergyCounter
+                    : tryGetIntField(mHealthdConfig->batteryChargeCounterPath).value_or(0);
 
     mHealthInfo->batteryCurrentAverageMicroamps =
             tryGetIntField(mHealthdConfig->batteryCurrentAvgPath).value_or(0);
@@ -497,6 +503,12 @@ void BatteryMonitor::updateValues(void) {
     }
 
     mHealthInfo->batteryFullChargeDesignCapacityUah = getFullChargeDesignCapacityUah();
+    if (mHealthInfo->batteryFullChargeDesignCapacityUah) {
+        int capacityMah = mHealthInfo->batteryFullChargeDesignCapacityUah / 1000;
+        if (property_get_int32("ro.bliss.battery_capacity", 0) != capacityMah) {
+            property_set("ro.bliss.battery_capacity", std::to_string(capacityMah).c_str());
+        }
+    }
 
     mBatteryHealthStatus = tryGetIntField(mHealthdConfig->batteryHealthStatusPath).value_or(0);
 
@@ -778,7 +790,12 @@ status_t BatteryMonitor::getProperty(int id, struct BatteryProperty* val) {
 
     switch (id) {
         case BATTERY_PROP_CHARGE_COUNTER:
-            readIntProp(mHealthdConfig->batteryChargeCounterPath);
+            if (mBatteryEnergyCounter) {
+                val->valueInt64 = mBatteryEnergyCounter;
+                ret = OK;
+            } else {
+                readIntProp(mHealthdConfig->batteryChargeCounterPath);
+            }
             break;
 
         case BATTERY_PROP_CURRENT_NOW:
@@ -855,10 +872,12 @@ base::Result<int64_t, base::Errno, false> BatteryMonitor::getVoltageMinDesign() 
 }
 
 int BatteryMonitor::getFullChargeUah() const {
+    if (mBatteryFullEnergy) return mBatteryFullEnergy;
     return tryGetIntField(mHealthdConfig->batteryFullChargePath).value_or(0);
 }
 
 int BatteryMonitor::getFullChargeDesignCapacityUah() const {
+    if (mBatteryFullEnergyDesignCapacity) return mBatteryFullEnergyDesignCapacity;
     return tryGetIntField(mHealthdConfig->batteryFullChargeDesignCapacityUahPath).value_or(0);
 }
 
@@ -909,7 +928,10 @@ void BatteryMonitor::dumpState(int fd) {
         write(fd, vs, strlen(vs));
     }
 
-    if (auto v = tryGetIntField(mHealthdConfig->batteryChargeCounterPath); v.ok()) {
+    if (mBatteryEnergyCounter) {
+        snprintf(vs, sizeof(vs), "  charge counter: %d\n", mBatteryEnergyCounter);
+        write(fd, vs, strlen(vs));
+    } else if (auto v = tryGetIntField(mHealthdConfig->batteryChargeCounterPath); v.ok()) {
         snprintf(vs, sizeof(vs), "  charge counter: %d\n", *v);
         write(fd, vs, strlen(vs));
     }
@@ -926,6 +948,17 @@ void BatteryMonitor::initWithBatteryDevice(const char* const name) {
     mBatteryDevicePresent = true;
 
     String8 path;
+
+    // Batteries that only report energy_* (uWh) are converted to uAh using
+    // voltage_min_design as the base voltage.
+    float vol_min = 0;
+    path.appendFormat("%s/%s/voltage_min_design", POWER_SUPPLY_SYSFS_PATH, name);
+    if (access(path.c_str(), R_OK) == 0) vol_min = tryGetIntField(path).value_or(0) / MILLION;
+    auto energyToUah = [vol_min](const String8& energyPath) -> int {
+        if (vol_min <= 0) return 0;
+        float temp = (tryGetIntField(energyPath).value_or(0) / 1000) / vol_min;
+        return static_cast<int>(round(temp)) * 1000;
+    };
     if (mHealthdConfig->batteryStatusPath.empty()) {
         path.clear();
         path.appendFormat("%s/%s/status", POWER_SUPPLY_SYSFS_PATH, name);
@@ -961,7 +994,16 @@ void BatteryMonitor::initWithBatteryDevice(const char* const name) {
     if (mHealthdConfig->batteryFullChargePath.empty()) {
         path.clear();
         path.appendFormat("%s/%s/charge_full", POWER_SUPPLY_SYSFS_PATH, name);
-        if (access(path.c_str(), R_OK) == 0) mHealthdConfig->batteryFullChargePath = path;
+        if (access(path.c_str(), R_OK) == 0) {
+            mHealthdConfig->batteryFullChargePath = path;
+        } else {
+            path.clear();
+            path.appendFormat("%s/%s/energy_full", POWER_SUPPLY_SYSFS_PATH, name);
+            if (access(path.c_str(), R_OK) == 0) {
+                mHealthdConfig->batteryFullChargePath = path;
+                mBatteryFullEnergy = energyToUah(path);
+            }
+        }
     }
 
     if (mHealthdConfig->batteryCurrentNowPath.empty()) {
@@ -993,8 +1035,16 @@ void BatteryMonitor::initWithBatteryDevice(const char* const name) {
     if (mHealthdConfig->batteryFullChargeDesignCapacityUahPath.empty()) {
         path.clear();
         path.appendFormat("%s/%s/charge_full_design", POWER_SUPPLY_SYSFS_PATH, name);
-        if (access(path.c_str(), R_OK) == 0)
+        if (access(path.c_str(), R_OK) == 0) {
             mHealthdConfig->batteryFullChargeDesignCapacityUahPath = path;
+        } else {
+            path.clear();
+            path.appendFormat("%s/%s/energy_full_design", POWER_SUPPLY_SYSFS_PATH, name);
+            if (access(path.c_str(), R_OK) == 0) {
+                mHealthdConfig->batteryFullChargeDesignCapacityUahPath = path;
+                mBatteryFullEnergyDesignCapacity = energyToUah(path);
+            }
+        }
     }
 
     if (mHealthdConfig->batteryCurrentAvgPath.empty()) {
@@ -1006,7 +1056,16 @@ void BatteryMonitor::initWithBatteryDevice(const char* const name) {
     if (mHealthdConfig->batteryChargeCounterPath.empty()) {
         path.clear();
         path.appendFormat("%s/%s/charge_counter", POWER_SUPPLY_SYSFS_PATH, name);
-        if (access(path.c_str(), R_OK) == 0) mHealthdConfig->batteryChargeCounterPath = path;
+        if (access(path.c_str(), R_OK) == 0) {
+            mHealthdConfig->batteryChargeCounterPath = path;
+        } else {
+            path.clear();
+            path.appendFormat("%s/%s/energy_now", POWER_SUPPLY_SYSFS_PATH, name);
+            if (access(path.c_str(), R_OK) == 0) {
+                mHealthdConfig->batteryChargeCounterPath = path;
+                mBatteryEnergyCounter = energyToUah(path);
+            }
+        }
     }
 
     if (mHealthdConfig->batteryTemperaturePath.empty()) {
