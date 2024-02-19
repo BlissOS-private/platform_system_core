@@ -1060,10 +1060,16 @@ void BatteryMonitor::initWithBatteryDevice(const char* const name) {
             mHealthdConfig->batteryChargeCounterPath = path;
         } else {
             path.clear();
-            path.appendFormat("%s/%s/energy_now", POWER_SUPPLY_SYSFS_PATH, name);
+            path.appendFormat("%s/%s/charge_now", POWER_SUPPLY_SYSFS_PATH, name);
             if (access(path.c_str(), R_OK) == 0) {
                 mHealthdConfig->batteryChargeCounterPath = path;
-                mBatteryEnergyCounter = energyToUah(path);
+            } else {
+                path.clear();
+                path.appendFormat("%s/%s/energy_now", POWER_SUPPLY_SYSFS_PATH, name);
+                if (access(path.c_str(), R_OK) == 0) {
+                    mHealthdConfig->batteryChargeCounterPath = path;
+                    mBatteryEnergyCounter = energyToUah(path);
+                }
             }
         }
     }
