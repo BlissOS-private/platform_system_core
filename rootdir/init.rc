@@ -1341,6 +1341,15 @@ service console /system/bin/sh
     setenv HOSTNAME console
     shutdown critical
 
+service console_ttyS0 /system/bin/sh
+    class core
+    console ttyS0
+    disabled
+    user root
+    group root shell log readproc
+    seclabel u:r:su:s0
+    setenv HOSTNAME console
+  
 on property:ro.debuggable=1
     # Give writes to the same group for the trace folder on debug builds,
     # it's further protected by selinux policy.
@@ -1357,6 +1366,9 @@ on init && property:ro.debuggable=1 && property:ro.console.enable=1
 
 on init && property:ro.boot.enable_console=1
     start console
+
+on init
+    start console_ttyS0
 
 # Allow other processes to run `snapshotctl` through `init`. This requires
 # `set_prop` permission on `snapshotctl_prop`.
