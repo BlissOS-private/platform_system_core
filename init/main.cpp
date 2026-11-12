@@ -21,6 +21,8 @@
 #include "subcontext.h"
 #include "ueventd.h"
 
+#include <unistd.h>
+
 #include <android-base/logging.h>
 
 #if __has_feature(address_sanitizer)
@@ -82,6 +84,9 @@ int main(int argc, char** argv) {
 #if defined(FIRST_STAGE_INIT) || defined(RECOVERY)
     return FirstStageMain(argc, argv);
 #else
+    if (getpid() == 1) {
+        execv("/system/bin/init_first_stage", argv);
+    }
     LOG(FATAL) << "Second-stage init requires an argument to main()";
 #endif
 }

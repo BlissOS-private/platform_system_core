@@ -317,6 +317,7 @@ cc_library_static {
 phony {
     name: "init",
     required: [
+        "init_first_stage.system",
         "init_second_stage",
     ] + select(product_variable("debuggable"), {
         true: ["overlay_remounter"],
@@ -542,6 +543,31 @@ init_first_stage_cc_defaults {
 cc_binary {
     name: "init_first_stage",
     defaults: ["init_first_stage_defaults"],
+    srcs: [
+        "first_stage_mount_android.cpp",
+        "snapuserd_transition.cpp",
+    ],
+    static_libs: [
+        "libgsi",
+        "liblp",
+        "liblz4",
+        "libprotobuf-cpp-lite",
+        "libsnapshot_cow",
+        "libsnapshot_init",
+        "libzstd",
+        "update_metadata-protos",
+    ],
+}
+
+// x86 initrds switch_root straight to /init (-> /system/bin/init) with no first-stage
+// ramdisk; second-stage init execs this copy to run first stage as PID 1.
+cc_binary {
+    name: "init_first_stage.system",
+    defaults: ["init_first_stage_defaults"],
+    stem: "init_first_stage",
+    installable: true,
+    ramdisk: false,
+    install_in_root: false,
     srcs: [
         "first_stage_mount_android.cpp",
         "snapuserd_transition.cpp",
